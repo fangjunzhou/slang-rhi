@@ -28,7 +28,6 @@ private:
 
 public:
     Context m_ctx;
-    DeviceInfo m_info;
     std::string m_adapterName;
     RefPtr<CommandQueueImpl> m_queue;
     ClearEngine m_clearEngine;
@@ -42,10 +41,6 @@ public:
     virtual SLANG_NO_THROW Result SLANG_MCALL getNativeDeviceHandles(DeviceNativeHandles* outHandles) override;
 
     virtual SLANG_NO_THROW Result SLANG_MCALL initialize(const DeviceDesc& desc) override;
-
-    Result getCUDAFormat(Format format, CUarray_format* outFormat);
-
-    Result getFormatSupport(Format format, FormatSupport* outFormatSupport) override;
 
     virtual SLANG_NO_THROW Result SLANG_MCALL
     createTexture(const TextureDesc& desc, const SubresourceData* initData, ITexture** outTexture) override;
@@ -102,8 +97,6 @@ public:
     void* map(IBuffer* buffer);
 
     void unmap(IBuffer* buffer);
-
-    virtual SLANG_NO_THROW const DeviceInfo& SLANG_MCALL getDeviceInfo() const override;
 
 public:
     virtual SLANG_NO_THROW Result SLANG_MCALL getQueue(QueueType type, ICommandQueue** outQueue) override;

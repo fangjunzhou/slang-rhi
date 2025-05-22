@@ -5,6 +5,8 @@
 #include <slang-com-ptr.h>
 #include <slang.h>
 
+#include <slang-rhi/capabilities.h>
+
 #if defined(SLANG_RHI_DYNAMIC)
 #if defined(_MSC_VER)
 #ifdef SLANG_RHI_DYNAMIC_EXPORT
@@ -343,8 +345,13 @@ enum class IndexFormat
 // TODO: Width/Height/Depth/whatever should not be used. We should use extentX, extentY, etc.
 struct FormatInfo
 {
+    /// Format type.
     Format format;
+    /// Format name.
     const char* name;
+    /// Slang format name (used in [format("xxx")] attribute).
+    /// nullptr if the format doesn't have a slang name.
+    const char* slangName;
     /// The kind of format.
     FormatKind kind;
     /// The amount of channels in the format. Only set if the channelType is set.
@@ -376,20 +383,25 @@ enum class FormatSupport
 {
     None = 0x0,
 
-    Buffer = 0x1,
-    IndexBuffer = 0x2,
-    VertexBuffer = 0x4,
+    CopySource = 0x1,
+    CopyDestination = 0x2,
 
-    Texture = 0x8,
-    DepthStencil = 0x10,
-    RenderTarget = 0x20,
-    Blendable = 0x40,
+    Texture = 0x4,
+    DepthStencil = 0x8,
+    RenderTarget = 0x10,
+    Blendable = 0x20,
+    Multisampling = 0x40,
+    Resolvable = 0x80,
 
-    ShaderLoad = 0x80,
-    ShaderSample = 0x100,
-    ShaderUavLoad = 0x200,
-    ShaderUavStore = 0x400,
-    ShaderAtomic = 0x800,
+    ShaderLoad = 0x100,
+    ShaderSample = 0x200,
+    ShaderUavLoad = 0x400,
+    ShaderUavStore = 0x800,
+    ShaderAtomic = 0x1000,
+
+    Buffer = 0x2000,
+    IndexBuffer = 0x4000,
+    VertexBuffer = 0x8000,
 };
 SLANG_RHI_ENUM_CLASS_OPERATORS(FormatSupport);
 
@@ -1924,6 +1936,7 @@ class IQueryPool : public ISlangUnknown
     SLANG_COM_INTERFACE(0xe4b585e4, 0x9da9, 0x479b, {0x89, 0x5c, 0x48, 0x78, 0x8e, 0xf2, 0x33, 0x65});
 
 public:
+    virtual SLANG_NO_THROW const QueryPoolDesc& SLANG_MCALL getDesc() = 0;
     virtual SLANG_NO_THROW Result SLANG_MCALL getResult(uint32_t queryIndex, uint32_t count, uint64_t* data) = 0;
     virtual SLANG_NO_THROW Result SLANG_MCALL reset() = 0;
 };
@@ -2470,15 +2483,14 @@ struct DeviceInfo
 
     DeviceLimits limits;
 
-    /// An projection matrix that ensures x, y mapping to pixels
-    /// is the same on all targets
-    float identityProjectionMatrix[16];
-
     /// The name of the graphics API being used by this device.
     const char* apiName = nullptr;
 
     /// The name of the graphics adapter.
     const char* adapterName = nullptr;
+
+    /// The LUID of the graphics adapter.
+    AdapterLUID adapterLUID;
 
     /// The clock frequency used in timestamp queries.
     uint64_t timestampFrequency = 0;
@@ -2595,14 +2607,23 @@ class IDevice : public ISlangUnknown
     SLANG_COM_INTERFACE(0x311ee28b, 0xdb5a, 0x4a3c, {0x89, 0xda, 0xf0, 0x03, 0x0f, 0xd5, 0x70, 0x4b});
 
 public:
+    /// Get information about the device.
+    virtual SLANG_NO_THROW const DeviceInfo& SLANG_MCALL getInfo() const = 0;
+
+    inline DeviceType getDeviceType() const { return getInfo().deviceType; }
+
     virtual SLANG_NO_THROW Result SLANG_MCALL getNativeDeviceHandles(DeviceNativeHandles* outHandles) = 0;
 
+    /// Returns a list of features supported by the device.
+    virtual SLANG_NO_THROW Result SLANG_MCALL getFeatures(uint32_t* outFeatureCount, Feature* outFeatures) = 0;
     virtual SLANG_NO_THROW bool SLANG_MCALL hasFeature(Feature feature) = 0;
     virtual SLANG_NO_THROW bool SLANG_MCALL hasFeature(const char* feature) = 0;
 
-    /// Returns a list of features supported by the device.
+    /// Returns a list of capabilities supported by the device.
     virtual SLANG_NO_THROW Result SLANG_MCALL
-    getFeatures(const char** outFeatures, size_t bufferSize, uint32_t* outFeatureCount) = 0;
+    getCapabilities(uint32_t* outCapabilityCount, Capability* outCapabilities) = 0;
+    virtual SLANG_NO_THROW bool SLANG_MCALL hasCapability(Capability capability) = 0;
+    virtual SLANG_NO_THROW bool SLANG_MCALL hasCapability(const char* capability) = 0;
 
     virtual SLANG_NO_THROW Result SLANG_MCALL getFormatSupport(Format format, FormatSupport* outFormatSupport) = 0;
 
@@ -2875,11 +2896,6 @@ public:
     virtual SLANG_NO_THROW Result SLANG_MCALL
     readBuffer(IBuffer* buffer, Offset offset, Size size, ISlangBlob** outBlob) = 0;
 
-    /// Get information about the device.
-    virtual SLANG_NO_THROW const DeviceInfo& SLANG_MCALL getDeviceInfo() const = 0;
-
-    inline DeviceType getDeviceType() const { return getDeviceInfo().deviceType; }
-
     virtual SLANG_NO_THROW Result SLANG_MCALL createQueryPool(const QueryPoolDesc& desc, IQueryPool** outPool) = 0;
 
     virtual SLANG_NO_THROW Result SLANG_MCALL
@@ -2999,6 +3015,9 @@ public:
     virtual SLANG_NO_THROW const char* SLANG_MCALL getDeviceTypeName(DeviceType type) = 0;
 
     virtual SLANG_NO_THROW bool SLANG_MCALL isDeviceTypeSupported(DeviceType type) = 0;
+
+    virtual SLANG_NO_THROW const char* SLANG_MCALL getFeatureName(Feature feature) = 0;
+    virtual SLANG_NO_THROW const char* SLANG_MCALL getCapabilityName(Capability capability) = 0;
 
     /// Gets a list of available adapters for a given device type.
     virtual SLANG_NO_THROW Result SLANG_MCALL getAdapters(DeviceType type, ISlangBlob** outAdaptersBlob) = 0;

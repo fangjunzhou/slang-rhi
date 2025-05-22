@@ -47,23 +47,61 @@ Result DeviceImpl::initialize(const DeviceDesc& desc)
 {
     AUTORELEASEPOOL
 
-    // Initialize device info.
-    {
-        m_info.apiName = "Metal";
-        m_info.deviceType = DeviceType::Metal;
-        m_info.adapterName = "default";
-        static const float kIdentity[] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-        ::memcpy(m_info.identityProjectionMatrix, kIdentity, sizeof(kIdentity));
-    }
-
-    m_desc = desc;
-
     SLANG_RETURN_ON_FAIL(Device::initialize(desc));
 
     m_device = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
+    if (!m_device)
+    {
+        return SLANG_FAIL;
+    }
     m_commandQueue = NS::TransferPtr(m_device->newCommandQueue(64));
+    if (!m_commandQueue)
+    {
+        return SLANG_FAIL;
+    }
     m_queue = new CommandQueueImpl(this, QueueType::Graphics);
     m_queue->init(m_commandQueue);
+
+    // Setup capture manager.
+    if (captureEnabled())
+    {
+        MTL::CaptureManager* captureManager = MTL::CaptureManager::sharedCaptureManager();
+        MTL::CaptureDescriptor* d = MTL::CaptureDescriptor::alloc()->init();
+        if (!captureManager->supportsDestination(MTL::CaptureDestinationGPUTraceDocument))
+        {
+            handleMessage(
+                DebugMessageType::Error,
+                DebugMessageSource::Layer,
+                "Cannot capture MTL calls to document; ensure that Info.plist exists with 'MetalCaptureEnabled' set to "
+                "'true'."
+            );
+            return SLANG_FAIL;
+        }
+        d->setDestination(MTL::CaptureDestinationGPUTraceDocument);
+        d->setCaptureObject(m_device.get());
+        NS::SharedPtr<NS::String> path = MetalUtil::createString("frame.gputrace");
+        NS::SharedPtr<NS::URL> url = NS::TransferPtr(NS::URL::alloc()->initFileURLWithPath(path.get()));
+        d->setOutputURL(url.get());
+        NS::Error* errorCode = NS::Error::alloc();
+        if (!captureManager->startCapture(d, &errorCode))
+        {
+            NS::String* errorString = errorCode->description();
+            std::string str(errorString->cString(NS::UTF8StringEncoding));
+            str = "Start capture failure: " + str;
+            handleMessage(DebugMessageType::Error, DebugMessageSource::Layer, str.c_str());
+            return SLANG_FAIL;
+        }
+    }
+
+    // Initialize device info.
+    {
+        m_info.deviceType = DeviceType::Metal;
+        m_info.apiName = "Metal";
+        m_info.adapterName = "default";
+        m_info.adapterLUID = {};
+    }
+
+    // Initialize features & capabilities.
 
     addFeature(Feature::HardwareDevice);
     addFeature(Feature::Surface);
@@ -81,6 +119,48 @@ Result DeviceImpl::initialize(const DeviceDesc& desc)
         addFeature(Feature::ParameterBlock);
     }
 
+    addCapability(Capability::metal);
+
+    // Initialize format support table.
+    // TODO: add table based on https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+    for (size_t formatIndex = 0; formatIndex < size_t(Format::_Count); ++formatIndex)
+    {
+        Format format = Format(formatIndex);
+        FormatSupport formatSupport = FormatSupport::None;
+        if (MetalUtil::translatePixelFormat(format) != MTL::PixelFormatInvalid)
+        {
+            // depth/stencil formats?
+            formatSupport |= FormatSupport::CopySource;
+            formatSupport |= FormatSupport::CopyDestination;
+            formatSupport |= FormatSupport::Texture;
+            if (isDepthFormat(format))
+                formatSupport |= FormatSupport::DepthStencil;
+            formatSupport |= FormatSupport::RenderTarget;
+            formatSupport |= FormatSupport::Blendable;
+            formatSupport |= FormatSupport::Resolvable;
+            formatSupport |= FormatSupport::ShaderLoad;
+            formatSupport |= FormatSupport::ShaderSample;
+            formatSupport |= FormatSupport::ShaderUavLoad;
+            formatSupport |= FormatSupport::ShaderUavStore;
+            formatSupport |= FormatSupport::ShaderAtomic;
+            formatSupport |= FormatSupport::Buffer;
+        }
+        if (MetalUtil::translateVertexFormat(format) != MTL::VertexFormatInvalid)
+        {
+            formatSupport |= FormatSupport::VertexBuffer;
+            formatSupport |= FormatSupport::CopySource;
+            formatSupport |= FormatSupport::CopyDestination;
+        }
+        if (format == Format::R32Uint || format == Format::R16Uint)
+        {
+            formatSupport |= FormatSupport::IndexBuffer;
+            formatSupport |= FormatSupport::CopySource;
+            formatSupport |= FormatSupport::CopyDestination;
+        }
+        m_formatSupport[formatIndex] = formatSupport;
+    }
+
+    // Initialize slang context.
     SLANG_RETURN_ON_FAIL(
         m_slangContext
             .initialize(desc.slang, SLANG_METAL_LIB, "", std::array{slang::PreprocessorMacroDesc{"__METAL__", "1"}})
@@ -88,43 +168,10 @@ Result DeviceImpl::initialize(const DeviceDesc& desc)
 
     SLANG_RETURN_ON_FAIL(m_clearEngine.initialize(m_device.get()));
 
-    // TODO: expose via some other means
-    if (captureEnabled())
-    {
-        MTL::CaptureManager* captureManager = MTL::CaptureManager::sharedCaptureManager();
-        MTL::CaptureDescriptor* d = MTL::CaptureDescriptor::alloc()->init();
-        if (!captureManager->supportsDestination(MTL::CaptureDestinationGPUTraceDocument))
-        {
-            printf(
-                "Cannot capture MTL calls to document; ensure that Info.plist exists with 'MetalCaptureEnabled' set "
-                "to 'true'.\n"
-            );
-            exit(1);
-        }
-        d->setDestination(MTL::CaptureDestinationGPUTraceDocument);
-        d->setCaptureObject(m_device.get());
-        NS::SharedPtr<NS::String> path = MetalUtil::createString("frame.gputrace");
-        NS::SharedPtr<NS::URL> url = NS::TransferPtr(NS::URL::alloc()->initFileURLWithPath(path.get()));
-        d->setOutputURL(url.get());
-        NS::Error* errorCode = NS::Error::alloc();
-        if (!captureManager->startCapture(d, &errorCode))
-        {
-            NS::String* errorString = errorCode->description();
-            std::string estr(errorString->cString(NS::UTF8StringEncoding));
-            printf("Start capture failure: %s\n", estr.c_str());
-            exit(1);
-        }
-    }
-
     return SLANG_OK;
 }
 
 // void DeviceImpl::waitForGpu() { m_deviceQueue.flushAndWait(); }
-
-const DeviceInfo& DeviceImpl::getDeviceInfo() const
-{
-    return m_info;
-}
 
 Result DeviceImpl::getQueue(QueueType type, ICommandQueue** outQueue)
 {
@@ -247,40 +294,6 @@ Result DeviceImpl::getTextureRowAlignment(Format format, Size* outAlignment)
         MTL::PixelFormat pixelFormat = MetalUtil::translatePixelFormat(format);
         *outAlignment = m_device->minimumLinearTextureAlignmentForPixelFormat(pixelFormat);
     }
-    return SLANG_OK;
-}
-
-Result DeviceImpl::getFormatSupport(Format format, FormatSupport* outFormatSupport)
-{
-    AUTORELEASEPOOL
-
-    FormatSupport support = FormatSupport::None;
-
-    if (MetalUtil::translatePixelFormat(format) != MTL::PixelFormatInvalid)
-    {
-        // TODO - add table based on https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
-        support |= FormatSupport::Buffer;
-        support |= FormatSupport::Texture;
-        if (isDepthFormat(format))
-            support |= FormatSupport::DepthStencil;
-        support |= FormatSupport::RenderTarget;
-        support |= FormatSupport::Blendable;
-        support |= FormatSupport::ShaderLoad;
-        support |= FormatSupport::ShaderSample;
-        support |= FormatSupport::ShaderUavLoad;
-        support |= FormatSupport::ShaderUavStore;
-        support |= FormatSupport::ShaderAtomic;
-    }
-    if (MetalUtil::translateVertexFormat(format) != MTL::VertexFormatInvalid)
-    {
-        support |= FormatSupport::VertexBuffer;
-    }
-    if (format == Format::R32Uint || format == Format::R16Uint)
-    {
-        support |= FormatSupport::IndexBuffer;
-    }
-
-    *outFormatSupport = support;
     return SLANG_OK;
 }
 

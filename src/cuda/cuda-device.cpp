@@ -168,11 +168,6 @@ Result DeviceImpl::getNativeDeviceHandles(DeviceNativeHandles* outHandles)
 
 Result DeviceImpl::initialize(const DeviceDesc& desc)
 {
-    SLANG_RETURN_ON_FAIL(
-        m_slangContext
-            .initialize(desc.slang, SLANG_PTX, "sm_7_5", std::array{slang::PreprocessorMacroDesc{"__CUDA__", "1"}})
-    );
-
     SLANG_RETURN_ON_FAIL(Device::initialize(desc));
 
     SLANG_RETURN_ON_FAIL(_initCuda(kReportType));
@@ -202,6 +197,73 @@ Result DeviceImpl::initialize(const DeviceDesc& desc)
 
     SLANG_CUDA_CTX_SCOPE(this);
 
+    // Initialize device info
+    {
+        m_info.deviceType = DeviceType::CUDA;
+        m_info.apiName = "CUDA";
+        char deviceName[256];
+        SLANG_CUDA_ASSERT_ON_FAIL(cuDeviceGetName(deviceName, sizeof(deviceName), m_ctx.device));
+        m_adapterName = deviceName;
+        m_info.adapterName = m_adapterName.data();
+        m_info.adapterLUID = cuda::getAdapterLUID(m_ctx.device);
+        m_info.timestampFrequency = 1000000;
+    }
+
+    // Query device limits
+    {
+        CUresult lastResult = CUDA_SUCCESS;
+        auto getAttribute = [&](CUdevice_attribute attribute) -> int
+        {
+            int value;
+            CUresult result = cuDeviceGetAttribute(&value, attribute, m_ctx.device);
+            if (result != CUDA_SUCCESS)
+                lastResult = result;
+            return value;
+        };
+
+        DeviceLimits limits = {};
+
+        limits.maxTextureDimension1D = getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE1D_WIDTH);
+        limits.maxTextureDimension2D = min({
+            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE2D_WIDTH),
+            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE2D_HEIGHT),
+        });
+        limits.maxTextureDimension3D = min({
+            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE3D_WIDTH),
+            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE3D_HEIGHT),
+            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE3D_DEPTH),
+        });
+        limits.maxTextureDimensionCube = getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACECUBEMAP_WIDTH);
+        limits.maxTextureLayers = min({
+            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE1D_LAYERED_LAYERS),
+            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE2D_LAYERED_LAYERS),
+        });
+
+        // limits.maxVertexInputElements
+        // limits.maxVertexInputElementOffset
+        // limits.maxVertexStreams
+        // limits.maxVertexStreamStride
+
+        limits.maxComputeThreadsPerGroup = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK);
+        limits.maxComputeThreadGroupSize[0] = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X);
+        limits.maxComputeThreadGroupSize[1] = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y);
+        limits.maxComputeThreadGroupSize[2] = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z);
+        limits.maxComputeDispatchThreadGroups[0] = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X);
+        limits.maxComputeDispatchThreadGroups[1] = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y);
+        limits.maxComputeDispatchThreadGroups[2] = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z);
+
+        // limits.maxViewports
+        // limits.maxViewportDimensions
+        // limits.maxFramebufferDimensions
+
+        // limits.maxShaderVisibleSamplers
+
+        m_info.limits = limits;
+
+        SLANG_CUDA_RETURN_ON_FAIL(lastResult);
+    }
+
+    // Initialize features & capabilities
     addFeature(Feature::HardwareDevice);
     addFeature(Feature::ParameterBlock);
 #if SLANG_RHI_ENABLE_VULKAN
@@ -213,6 +275,9 @@ Result DeviceImpl::initialize(const DeviceDesc& desc)
     // Not clear how to detect half support on CUDA. For now we'll assume we have it
     addFeature(Feature::Half);
     addFeature(Feature::Pointer);
+
+    addCapability(Capability::cuda);
+
 
 #if SLANG_RHI_ENABLE_OPTIX
     {
@@ -271,174 +336,35 @@ Result DeviceImpl::initialize(const DeviceDesc& desc)
     }
 #endif
 
-    // Initialize DeviceInfo
-    {
-        m_info.deviceType = DeviceType::CUDA;
-        m_info.apiName = "CUDA";
-        static const float kIdentity[] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-        ::memcpy(m_info.identityProjectionMatrix, kIdentity, sizeof(kIdentity));
-        char deviceName[256];
-        SLANG_CUDA_ASSERT_ON_FAIL(cuDeviceGetName(deviceName, sizeof(deviceName), m_ctx.device));
-        m_adapterName = deviceName;
-        m_info.adapterName = m_adapterName.data();
-        m_info.timestampFrequency = 1000000;
-    }
+    // Initialize slang context
+    SLANG_RETURN_ON_FAIL(
+        m_slangContext
+            .initialize(desc.slang, SLANG_PTX, "sm_7_5", std::array{slang::PreprocessorMacroDesc{"__CUDA__", "1"}})
+    );
 
-    // Get device limits.
+    // Initialize format support table
+    for (size_t formatIndex = 0; formatIndex < size_t(Format::_Count); ++formatIndex)
     {
-        CUresult lastResult = CUDA_SUCCESS;
-        auto getAttribute = [&](CUdevice_attribute attribute) -> int
+        Format format = Format(formatIndex);
+        FormatSupport formatSupport = FormatSupport::None;
+        if (isFormatSupported(format))
         {
-            int value;
-            CUresult result = cuDeviceGetAttribute(&value, attribute, m_ctx.device);
-            if (result != CUDA_SUCCESS)
-                lastResult = result;
-            return value;
-        };
-
-        DeviceLimits limits = {};
-
-        limits.maxTextureDimension1D = getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE1D_WIDTH);
-        limits.maxTextureDimension2D = min({
-            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE2D_WIDTH),
-            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE2D_HEIGHT),
-        });
-        limits.maxTextureDimension3D = min({
-            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE3D_WIDTH),
-            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE3D_HEIGHT),
-            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE3D_DEPTH),
-        });
-        limits.maxTextureDimensionCube = getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACECUBEMAP_WIDTH);
-        limits.maxTextureLayers = min({
-            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE1D_LAYERED_LAYERS),
-            getAttribute(CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE2D_LAYERED_LAYERS),
-        });
-
-        // limits.maxVertexInputElements
-        // limits.maxVertexInputElementOffset
-        // limits.maxVertexStreams
-        // limits.maxVertexStreamStride
-
-        limits.maxComputeThreadsPerGroup = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK);
-        limits.maxComputeThreadGroupSize[0] = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X);
-        limits.maxComputeThreadGroupSize[1] = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y);
-        limits.maxComputeThreadGroupSize[2] = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z);
-        limits.maxComputeDispatchThreadGroups[0] = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X);
-        limits.maxComputeDispatchThreadGroups[1] = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y);
-        limits.maxComputeDispatchThreadGroups[2] = getAttribute(CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z);
-
-        // limits.maxViewports
-        // limits.maxViewportDimensions
-        // limits.maxFramebufferDimensions
-
-        // limits.maxShaderVisibleSamplers
-
-        m_info.limits = limits;
-
-        SLANG_CUDA_RETURN_ON_FAIL(lastResult);
+            formatSupport |= FormatSupport::CopySource;
+            formatSupport |= FormatSupport::CopyDestination;
+            formatSupport |= FormatSupport::Texture;
+            formatSupport |= FormatSupport::ShaderLoad;
+            formatSupport |= FormatSupport::ShaderSample;
+            formatSupport |= FormatSupport::ShaderUavLoad;
+            formatSupport |= FormatSupport::ShaderUavStore;
+            formatSupport |= FormatSupport::ShaderAtomic;
+        }
+        m_formatSupport[formatIndex] = formatSupport;
     }
 
     m_queue = new CommandQueueImpl(this, QueueType::Graphics);
 
     SLANG_RETURN_ON_FAIL(m_clearEngine.initialize(m_debugCallback));
 
-    return SLANG_OK;
-}
-
-Result DeviceImpl::getCUDAFormat(Format format, CUarray_format* outFormat)
-{
-    // TODO: Expand to cover all available formats that can be supported in CUDA
-    // NOTE: If adding to this, update getFormatSupport accordingly.
-    switch (format)
-    {
-    case Format::RGBA32Float:
-    case Format::RG32Float:
-    case Format::R32Float:
-    case Format::D32Float:
-        *outFormat = CU_AD_FORMAT_FLOAT;
-        return SLANG_OK;
-    case Format::RGBA16Float:
-    case Format::RG16Float:
-    case Format::R16Float:
-        *outFormat = CU_AD_FORMAT_HALF;
-        return SLANG_OK;
-    case Format::RGBA32Uint:
-    case Format::RG32Uint:
-    case Format::R32Uint:
-        *outFormat = CU_AD_FORMAT_UNSIGNED_INT32;
-        return SLANG_OK;
-    case Format::RGBA16Uint:
-    case Format::RG16Uint:
-    case Format::R16Uint:
-        *outFormat = CU_AD_FORMAT_UNSIGNED_INT16;
-        return SLANG_OK;
-    case Format::RGBA8Uint:
-    case Format::RG8Uint:
-    case Format::R8Uint:
-    case Format::RGBA8Unorm:
-        *outFormat = CU_AD_FORMAT_UNSIGNED_INT8;
-        return SLANG_OK;
-    case Format::RGBA32Sint:
-    case Format::RG32Sint:
-    case Format::R32Sint:
-        *outFormat = CU_AD_FORMAT_SIGNED_INT32;
-        return SLANG_OK;
-    case Format::RGBA16Sint:
-    case Format::RG16Sint:
-    case Format::R16Sint:
-        *outFormat = CU_AD_FORMAT_SIGNED_INT16;
-        return SLANG_OK;
-    case Format::RGBA8Sint:
-    case Format::RG8Sint:
-    case Format::R8Sint:
-        *outFormat = CU_AD_FORMAT_SIGNED_INT8;
-        return SLANG_OK;
-    default:
-        SLANG_RHI_ASSERT_FAILURE("Only support R32Float/RGBA8Unorm formats for now");
-        return SLANG_FAIL;
-    }
-}
-
-Result DeviceImpl::getFormatSupport(Format format, FormatSupport* outFormatSupport)
-{
-    SLANG_RETURN_ON_FAIL(Device::getFormatSupport(format, outFormatSupport));
-    switch (format)
-    {
-    case Format::R8Uint:
-    case Format::R8Sint:
-    case Format::RG8Uint:
-    case Format::RG8Sint:
-    case Format::RGBA8Uint:
-    case Format::RGBA8Sint:
-    case Format::RGBA8Unorm:
-
-    case Format::R16Uint:
-    case Format::R16Sint:
-    case Format::R16Float:
-    case Format::RG16Uint:
-    case Format::RG16Sint:
-    case Format::RG16Float:
-    case Format::RGBA16Uint:
-    case Format::RGBA16Sint:
-    case Format::RGBA16Float:
-
-    case Format::R32Uint:
-    case Format::R32Sint:
-    case Format::R32Float:
-    case Format::RG32Uint:
-    case Format::RG32Sint:
-    case Format::RG32Float:
-    case Format::RGBA32Uint:
-    case Format::RGBA32Sint:
-    case Format::RGBA32Float:
-
-    case Format::D32Float:
-        break;
-    default:
-        // Disable formats not available in getCUDAFormat
-        *outFormatSupport = (FormatSupport)0;
-        break;
-    }
     return SLANG_OK;
 }
 
@@ -535,11 +461,6 @@ void DeviceImpl::unmap(IBuffer* buffer)
     SLANG_UNUSED(buffer);
 }
 
-const DeviceInfo& DeviceImpl::getDeviceInfo() const
-{
-    return m_info;
-}
-
 Result DeviceImpl::getQueue(QueueType type, ICommandQueue** outQueue)
 {
     if (type != QueueType::Graphics)
@@ -589,7 +510,7 @@ Result DeviceImpl::readTexture(
     copyParam.srcArray = srcArray;
     copyParam.srcZ = layer;
     copyParam.WidthInBytes = layout.rowPitch;
-    copyParam.Height = layout.size.height;
+    copyParam.Height = (layout.size.height + layout.blockHeight - 1) / layout.blockHeight;
     copyParam.Depth = layout.size.depth;
     SLANG_CUDA_RETURN_ON_FAIL(cuMemcpy3D(&copyParam));
 

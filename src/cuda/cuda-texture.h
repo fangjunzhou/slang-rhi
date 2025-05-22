@@ -4,6 +4,8 @@
 
 namespace rhi::cuda {
 
+bool isFormatSupported(Format format);
+
 class TextureImpl : public Texture
 {
 public:

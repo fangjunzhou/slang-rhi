@@ -254,12 +254,15 @@ public:
         : DeviceChild(device)
         , m_desc(desc)
     {
+        m_descHolder.holdString(m_desc.label);
     }
 
+    virtual SLANG_NO_THROW const QueryPoolDesc& SLANG_MCALL getDesc() override { return m_desc; }
     virtual SLANG_NO_THROW Result SLANG_MCALL reset() override { return SLANG_OK; }
 
 public:
     QueryPoolDesc m_desc;
+    StructHolder m_descHolder;
 };
 
 static const int kRayGenRecordSize = 64; // D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
@@ -306,9 +309,18 @@ public:
     StructHolder m_configHolder;
 };
 
-
 bool isDepthFormat(Format format);
 bool isStencilFormat(Format format);
+
+inline uint32_t widthInBlocks(const FormatInfo& formatInfo, uint32_t size)
+{
+    return formatInfo.isCompressed ? (size + formatInfo.blockWidth - 1) / formatInfo.blockWidth : size;
+}
+
+inline uint32_t heightInBlocks(const FormatInfo& formatInfo, uint32_t size)
+{
+    return formatInfo.isCompressed ? (size + formatInfo.blockHeight - 1) / formatInfo.blockHeight : size;
+}
 
 bool isDebugLayersEnabled();
 
