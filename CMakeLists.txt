@@ -105,6 +105,10 @@ cmake_dependent_option(SLANG_RHI_ENABLE_NVAPI "Enable NVAPI" ON "SLANG_RHI_HAS_N
 option(SLANG_RHI_FETCH_SLANG "Fetch slang" ON)
 set(SLANG_RHI_FETCH_SLANG_VERSION "2025.7.1" CACHE STRING "Slang version to fetch")
 
+# Fetch WinPixEventRuntime options
+option(SLANG_RHI_FETCH_WINPIX "Fetch WinPixEventRuntime" ON)
+set(SLANG_RHI_FETCH_WINPIX_URL "https://www.nuget.org/api/v2/package/WinPixEventRuntime/1.0.240308001" CACHE STRING "WinPixEventRuntime URL to fetch")
+
 # Fetch dxc options
 option(SLANG_RHI_FETCH_DXC "Fetch dxc (DirectX Shader Compiler)" ON)
 set(SLANG_RHI_FETCH_DXC_URL "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2407/dxc_2024_07_31.zip" CACHE STRING "DXC URL to fetch")
@@ -252,6 +256,17 @@ if(SLANG_RHI_FETCH_DXC AND SLANG_RHI_ENABLE_D3D12 AND (CMAKE_SYSTEM_NAME STREQUA
     elseif(SLANG_RHI_ARCHITECTURE MATCHES "aarch64|arm64")
         copy_file(${dxc_SOURCE_DIR}/bin/arm64/dxcompiler.dll .)
         copy_file(${dxc_SOURCE_DIR}/bin/arm64/dxil.dll .)
+    endif()
+endif()
+
+# Fetch WinPixEventRuntime
+if(SLANG_RHI_FETCH_WINPIX AND SLANG_RHI_ENABLE_D3D12 AND (CMAKE_SYSTEM_NAME STREQUAL "Windows"))
+    message(STATUS "Fetching WinPixEventRuntime ...")
+    FetchPackage(winpix URL ${SLANG_RHI_FETCH_WINPIX_URL})
+    if(SLANG_RHI_ARCHITECTURE MATCHES "x86_64")
+        copy_file(${winpix_SOURCE_DIR}/bin/x64/WinPixEventRuntime.dll .)
+    elseif(SLANG_RHI_ARCHITECTURE MATCHES "aarch64|arm64")
+        copy_file(${winpix_SOURCE_DIR}/bin/arm64/WinPixEventRuntime.dll .)
     endif()
 endif()
 
@@ -484,6 +499,7 @@ target_sources(slang-rhi PRIVATE
     src/core/blob.cpp
     src/core/offset-allocator.cpp
     src/core/platform.cpp
+    src/core/sha1.cpp
     src/core/task-pool.cpp
     src/debug-layer/debug-command-buffer.cpp
     src/debug-layer/debug-command-encoder.cpp
@@ -695,6 +711,9 @@ if(SLANG_RHI_BUILD_TESTS)
     add_library(stb INTERFACE)
     target_include_directories(stb INTERFACE external/stb)
 
+    add_library(renderdoc INTERFACE)
+    target_include_directories(renderdoc INTERFACE external/renderdoc)
+
     add_executable(slang-rhi-tests)
     target_sources(slang-rhi-tests PRIVATE
         tests/main.cpp
@@ -710,7 +729,9 @@ if(SLANG_RHI_BUILD_TESTS)
         tests/test-cmd-copy-buffer-to-texture.cpp
         tests/test-cmd-copy-texture.cpp
         tests/test-cmd-copy-texture-to-buffer.cpp
+        tests/test-cmd-debug.cpp
         tests/test-cmd-draw.cpp
+        tests/test-cmd-query.cpp
         tests/test-cmd-upload-buffer.cpp
         tests/test-cmd-upload-texture.cpp
         tests/test-compute-smoke.cpp
@@ -739,7 +760,9 @@ if(SLANG_RHI_BUILD_TESTS)
         tests/test-root-shader-parameter.cpp
         tests/test-sampler-array.cpp
         tests/test-sampler.cpp
+        tests/test-sha1.cpp
         tests/test-shader-cache.cpp
+        tests/test-shader-object-resource-tracking.cpp
         tests/test-staging-heap.cpp
         tests/test-surface.cpp
         tests/test-texture-create.cpp
@@ -764,7 +787,7 @@ if(SLANG_RHI_BUILD_TESTS)
     )
     target_compile_features(slang-rhi-tests PRIVATE cxx_std_17)
     target_include_directories(slang-rhi-tests PRIVATE tests src)
-    target_link_libraries(slang-rhi-tests PRIVATE doctest stb slang slang-rhi glfw)
+    target_link_libraries(slang-rhi-tests PRIVATE doctest stb slang slang-rhi glfw renderdoc)
     if(SLANG_RHI_ENABLE_OPTIX)
         target_link_libraries(slang-rhi-tests PRIVATE slang-rhi-optix)
     endif()

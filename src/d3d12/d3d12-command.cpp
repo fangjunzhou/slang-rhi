@@ -160,7 +160,7 @@ Result CommandRecorder::record(CommandBufferImpl* commandBuffer)
     return SLANG_OK;
 }
 
-#define NOT_SUPPORTED(x) m_device->warning(S_CommandEncoder_##x " command is not supported!")
+#define NOT_SUPPORTED(x) m_device->printWarning(S_CommandEncoder_##x " command is not supported!")
 
 void CommandRecorder::cmdCopyBuffer(const commands::CopyBuffer& cmd)
 {
@@ -1271,9 +1271,9 @@ void CommandRecorder::cmdPushDebugGroup(const commands::PushDebugGroup& cmd)
     if (beginEvent)
     {
         UINT64 color = 0xff000000;
-        color |= uint8_t(cmd.rgbColor[0] * 255.0f) << 16;
-        color |= uint8_t(cmd.rgbColor[1] * 255.0f) << 8;
-        color |= uint8_t(cmd.rgbColor[2] * 255.0f);
+        color |= uint8_t(cmd.color.r * 255.0f) << 16;
+        color |= uint8_t(cmd.color.g * 255.0f) << 8;
+        color |= uint8_t(cmd.color.b * 255.0f);
         beginEvent(m_cmdList, color, cmd.name);
     }
 }
@@ -1293,9 +1293,9 @@ void CommandRecorder::cmdInsertDebugMarker(const commands::InsertDebugMarker& cm
     if (setMarker)
     {
         UINT64 color = 0xff000000;
-        color |= uint8_t(cmd.rgbColor[0] * 255.0f) << 16;
-        color |= uint8_t(cmd.rgbColor[1] * 255.0f) << 8;
-        color |= uint8_t(cmd.rgbColor[2] * 255.0f);
+        color |= uint8_t(cmd.color.r * 255.0f) << 16;
+        color |= uint8_t(cmd.color.g * 255.0f) << 8;
+        color |= uint8_t(cmd.color.b * 255.0f);
         setMarker(m_cmdList, color, cmd.name);
     }
 }
